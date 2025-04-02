@@ -105,8 +105,6 @@ Script was tested in:
 
 Script was tested in bash 5.2.37(1)
 
-#################### HERE TODO
-
 ## Usage
 
 Run HexSh with a target file:
