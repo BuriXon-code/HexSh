@@ -1,0 +1,1080 @@
+#!/bin/bash
+
+##############################################
+# Author: Kamil BuriXon Burek (BuriXon-code) #
+# Name: HexSh - Hex Editor (c) 2025          #
+# Description: Hexadecimal text editor in    #
+#              bash.                         #
+# Version: v 1.0                             #
+# Changelog: release                         #
+# Todo: Optimize ASCII preview.              #
+#       Update 'help' display.               #
+#       Fix undo/redo after deleting.        #
+##############################################
+
+# FIND PACKAGE MANAGER
+detect_package_manager() {
+	# ENTRY FOR TERMUX
+	if [ -d "/data/data/com.termux/files" ]; then
+		PKG_MANAGER="termux"
+		INSTALL_CMD="pkg install"
+		return
+	fi
+	# ENTRIES FOR OTHER PACKAGE MANAGERS
+	for manager in apt pacman dnf zypper apk pkg; do
+		if command -v "$manager" &>/dev/null; then
+			PKG_MANAGER="$manager"
+			break
+		fi
+	done
+
+	# CHOOSE MESSAGE FOR PM
+	case "$PKG_MANAGER" in
+		apt) INSTALL_CMD="apt install" ;;
+		pacman) INSTALL_CMD="pacman -Sy" ;;
+		dnf) INSTALL_CMD="dnf install" ;;
+		zypper) INSTALL_CMD="zypper install" ;;
+		apk) INSTALL_CMD="apk add" ;;
+		pkg) INSTALL_CMD="pkg install" ;;
+		*) PKG_MANAGER="unknown" ;;
+	esac
+}
+
+# CHECK DEPENDENCIES
+check_and_suggest_install() {
+	local cmd pkg missing=()
+	declare -A packages_apt=(
+		["tput"]="ncurses-bin"
+		["hexdump"]="util-linux"
+		["xxd"]="vim-common"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_pacman=(
+		["tput"]="ncurses"
+		["hexdump"]="util-linux"
+		["xxd"]="vim"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_dnf=(
+		["tput"]="ncurses"
+		["hexdump"]="util-linux"
+		["xxd"]="vim-common"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_zypper=(
+		["tput"]="ncurses-utils"
+		["hexdump"]="util-linux"
+		["xxd"]="vim"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_apk=(
+		["tput"]="ncurses"
+		["hexdump"]="util-linux"
+		["xxd"]="vim"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_pkg=(
+		["tput"]="ncurses-utils"
+		["hexdump"]="util-linux"
+		["xxd"]="vim"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+	declare -A packages_termux=(
+		["tput"]="ncurses-utils"
+		["hexdump"]="util-linux"
+		["xxd"]="xxd"
+		["stty"]="coreutils"
+		["jq"]="jq"
+		["file"]="file"
+	)
+
+	declare -n packages_list="packages_${PKG_MANAGER}"
+	declare -A unique_packages
+
+	# CHECK EVERY SINGLE COMMAND
+	for cmd in "${!packages_list[@]}"; do
+		if ! command -v "$cmd" &>/dev/null; then
+			pkg="${packages_list[$cmd]}"
+			unique_packages["$pkg"]=1
+		fi
+	done
+
+	# IF SOMETHING MISSING, GIVE ERROR AND INSTRUCTIONS
+	if [[ ${#unique_packages[@]} -gt 0 ]]; then
+		echo -e "\e[31mThe following commands are missing: ${!unique_packages[@]}\e[0m" >&2
+		if [[ "$PKG_MANAGER" != "unknown" ]]; then
+			echo -e "\e[33mYou can install them by running:" >&2
+			echo -e "\e[36m$INSTALL_CMD ${!unique_packages[@]}" >&2
+			exit 14
+		else
+			echo -e "Unknown package manager. Please install the missing commands manually." >&2
+			exit 14
+		fi
+	fi
+}
+
+# VALIDATE DEOENDENCIES
+detect_package_manager
+check_and_suggest_install
+
+# CHECK IF TPUT COLS AND LINES WORKS
+test_lines=$(tput lines)
+test_cols=$(tput cols)
+if [[ -z $test_lines ]] || [[ $test_lines -le 0 ]] || ! [[ $test_lines =~ ^[0-9]+$ ]] || [[ -z $test_cols ]] || [[ $test_cols -le 0 ]] || ! [[ $test_cols =~ ^[0-9]+$ ]]; then
+	echo -e "\e[31mCannot get terminal dimensions." >&2
+	exit 6
+fi
+
+# HANDLE '-h' OPTION
+help() {
+	# 'full' FOR COMMAND-LINE HELP; OTHER FOR IN_EDITOR HELP
+	local full=$1
+		echo -e "\e[?7l\e[44m\e[97m$(printf '%*s' $(( $(tput cols) + 10 )) | tr ' ' ' ')\r\e[K+ HexSh : Bash Hex Editor : Help\e[0m\e[?7h"
+	if $full; then
+		echo
+		echo -e "This is a simple hex editor written in Bash that allows you to:\e[K"
+		echo -e "- View and edit hex content of a file.\e[K"
+		echo -e "- Navigate through the file using arrow keys and make edits.\e[K"
+		echo -e "- Save changes back to the file.\e[K"
+		echo -e "- Scroll through the content to view more lines of the file.\e[K"
+		echo -e "- \e[33mWarning:\e[0m Script cannot handle large files. It is recommend to edit the files with maximum size of about few MiB.\e[K"
+		echo -e "\e[K"
+		echo -e "Usage:\e[K"
+		echo -e "   Provide a file as an argument to open it for editing.\e[K"
+		echo -e "   Usage: $(basename $0) <file> <options>\e[K"
+		echo -e "   Example: $(basename $0) myfile.txt\e[K"
+		echo -e "   Options:\e[K"
+		echo -e "      -b    Remove backup files from cache and launch.\e[K"
+		echo -e "      -c    Set the columns count.\e[K"
+		echo -e "      -h    Show help info and exit.\e[K"
+		echo -e "      -i    Start with visible ASCII preview.\e[K"
+		echo -e "      -o    Start with hidden offset view.\e[K"
+		echo -e "      -r    Set the rows count.\e[K"
+		echo -e "      -v    Start with fast mode enabled.\e[K"
+		echo
+	fi
+	echo -e "Basic Commands:\e[K"
+	echo -e "   - Use Arrow Keys to navigate through the hex content.\e[K"
+	echo -e "   - Press 'Enter' to add new empty line at the end.\e[K"
+	echo -e "   - Press 'Pg Down' to move cursor down by 5 lines.\e[K"
+	echo -e "   - Press 'Pg Up' to move cursor up by 5 lines.\e[K"
+	echo -e "   - Press 'Home' to move cursor to the first character.\e[K"
+	echo -e "   - Press 'End' to move cursor to the last character.\e[K"
+	echo -e "   - Press 'j' to scroll down by 1 line.\e[K"
+	echo -e "   - Press 'n' to scroll down by 5 lines.\e[K"
+	echo -e "   - Press 'k' to scroll up by 1 line.\e[K"
+	echo -e "   - Press 'm' to scroll up by 5 line.\e[K"
+	echo -e "   - Press 'l' to move to the specified line.\e[K"
+	echo -e "   - Press 'i' to move to the specified offset.\e[K"
+	echo -e "   - Press 'z' to undo the last change."
+	echo -e "   - Press 'r' to redo the last change."
+	echo -e "   - Press 's' to save to new file."
+	echo -e "   - Press 'o' to show/hide offset view.\e[K"
+	echo -e "   - Press 'p' to show/hide ASCII preview.\e[K"
+	echo -e "     \e[2m+Info: ASCII view may slowing down editor performance.\e[0m\e[K"
+	echo -e "   - Press 'v' to enable/disable fast mode.\e[K"
+	echo -e "     \e[2m+Info: Enabling fast mode increases the editor's performance at the cost of graphical stability.\e[0m\e[K"
+	echo -e "   - Press '.' to write hex space (code 20).\e[K"
+	echo -e "   - Press 'enter' to create new emoty line.\e[K"
+	echo -e "     \e[2m+Info: Cannot undo!\e[0m\e[K"
+	echo -e "   - Press 'x' to delete selected byte.\e[K"
+	echo -e "     \e[2m+Info: Sometime crashes with undo/redo.\e[0m\e[K"
+	echo -e "   - Press 'h' to view help screen.\e[K"
+	echo -e "   - Press 'w' to save your changes to the file.\e[K"
+	echo -e "   - Press 'q' to quit the editor.\e[K"
+	if ! $full; then
+		echo -e "\e[J\n\n"
+	fi
+	if $full; then
+		echo
+		echo -e "Editing the Hex:\e[K"
+		echo -e "   - While navigating through the hex data, you can edit the content.\e[K"
+		echo -e "   - Input a hexadecimal value (0-9, A-F) and it will replace the current byte.\e[K"
+		echo -e "   - Editing is done byte-by-byte (2 characters per byte).\e[K"
+		echo -e "   - After typing a hex value, it will be applied to the current position in the file.\e[K"
+		echo -e "\nBackups of edited files are stored in \$HOME/.cache/BuriXon-code/HexSh/ directory."
+		echo -e "\e[J\n\n\n"
+	fi
+	echo -e "\e[?7l\e[$(( $(tput lines) - 2 ));1H\e[44m\e[97m$(printf '%*s' $(( $(tput cols) + 10 )) | tr ' ' ' ')\r\e[K+ BuriXon-code 2025 (c) version 1.0 beta\e[0m\e[?7h"
+}
+
+# SOME VARIABLES
+fast=false # FAST MODE DEFAULT
+offset_mode=true # OFFSET MODE DEFAULT
+ascii=false # ASCII MODE DEFAULT
+have_file=false # SET NON-FILE START
+row=0 # START POSITION
+col=0 # START POSITION
+scroll=0 # START POSITION
+editing="" # START WITH NO MESSAGES
+temp_input="" # START WITH NO INPUT KEYS
+editions=0 # START WITH BLANK EDITIONS COUNT
+remove_backups=false # DO NOT REMOVE BACKUPS
+
+# PARAMETERS VALIDATION
+while [[ $# -ne 0 ]]; do
+	case $1 in
+	# HELP
+	-h)
+		shift
+		help true
+		exit 0
+		;;
+	# DISPLAY OFFSETS
+	-o)
+		shift
+		offset_mode=false
+		;;
+	# DISPLAY ASCII
+	-i)
+		shift
+		ascii=true
+		;;
+	# FAST MODE
+	-v)
+		shift
+		fast=true
+		;;
+	# CUSTOM COLS
+	-c)
+		if [[ -n $2 && $2 =~ ^[0-9]+$ ]]; then
+			user_select_cols=$2
+			shift 2
+		else
+			echo -e "\e[31mValue for the cols count must be positive integer!" >&2
+			exit 3
+		fi
+		;;
+	# CUSTOM ROWS
+	-r)
+		if [[ -n $2 && $2 =~ ^[0-9]+$ ]]; then
+			user_select_rows=$2
+			shift 2
+		else
+			echo -e "\e[31mValue for the rows count must be positive integer!" >&2
+			exit 3
+		fi
+		;;
+	# DELETE BACKUPS
+	-b)
+		rm -f $HOME/.cache/BuriXon-code/HexSh/*.old
+		rm -f $HOME/.cache/BuriXon-code/HexSh/*.bak
+		shift
+		if [[ $# -eq 0 ]]; then
+			exit 0
+		fi
+		;;
+	# OTHER/FILENAME
+	*)
+		# GET AND CHECK FILE EXISTING
+		if [[ -f "$1" ]]; then
+			main_file="$1"
+			have_file=true
+			shift
+		else
+			echo -e "\e[31mNo such file $1."
+			exit 3
+		fi
+		# NON-READABLE FILE
+		if ! [[ -r "$main_file" ]]; then
+			echo -e "\e[31mFile non-readable."
+			exit 126
+		fi
+		;;
+	esac
+done
+
+# DECLARE COLS COUNT
+if [[ -n $user_select_cols ]]; then
+	cols=$user_select_cols
+else
+	cols=12
+fi
+
+# CHECK IF USER ENTER FILENAME
+if ! $have_file; then
+	echo -en "\e[33mEnter filename to open:\e[35m "
+	read filename
+	if [[ -f "$filename" ]]; then
+		main_file="$filename"
+		echo -en "\e[0m"
+		shift
+	else
+		echo -e "\e[31mNo such file ${filename}."
+		exit 3
+	fi
+fi
+
+# NON-WRITABLE FILE
+if ! [[ -w "$main_file" ]]; then
+	warning="Read-only file!"
+fi
+
+# DECLARE CACHE DIR
+cache_dir="$HOME/.cache/BuriXon-code/HexSh"
+mkdir -p "$cache_dir"
+
+# DECLARE DEPENDENT FILENAMES
+tmp_file="$cache_dir/$(basename "$main_file").tmp"
+bak_file="$cache_dir/$(basename "$main_file").bak"
+history_file="$cache_dir/$(basename "$main_file").changes.json"
+redo_file="$cache_dir/$(basename "$main_file").redo.json"
+if [[ -f "$bak_file" ]]; then
+	mv "$bak_file" "$bak_file".old
+fi
+cp "$main_file" "$bak_file"
+
+# MAP HEXADECIMAL DATA FROM FILE
+hexdump -v -e "${cols}/1 \"%02X \" \"\n\"" "$main_file" | sed "s/   / --/g" > "$tmp_file"
+mapfile -t hex_data < "$tmp_file"
+
+# DECLARE CACHES
+declare -A ascii_cache # CACHE FOR ASCII PREVIEW
+orig_hex_data=("${hex_data[@]}") # CACHE WITH ORIGINAL DATA (FOR MARKING CHANGES)
+rows=${#hex_data[@]}
+
+# CLEANUP FUNCTION EXECUTED BEFORE EXIT
+cleanup() {
+	echo -e "\e[?25h" # RESTORE CURSOR
+	tput rmcup # RESTORE STANDARD TERMINAL
+	rm -f "$tmp_file" "history_file" "redo_file" "$cache_dir"/*.json &>/dev/null || exit 0 # REMOVE TMP HEX-DATA FILE
+	exit 0
+}
+
+# SET ALTERNATIVE TERMINAL
+tput smcup # SWITCH TO ALTERNATIVE TERMINAL
+echo -e "\e[?25l" # HIDE CURSOR
+clear
+
+# RECEIVE SIGNALS
+trap 'warning="Press Q to exit."; draw_screen' SIGINT # CTRL+C INTERRUPT SIGNAL
+trap 'warning="Suspending is disabled."; draw_screen' SIGTSTP # CTRL+Z SUSPEND SIGNAL
+trap cleanup EXIT # EXIT EXECUTES CLEANUP
+
+# HANDLE FILE FOR REDO/UNDO
+save_change_to_history() {
+    local row=$1
+    local col=$2
+    local old_byte=$3
+    local new_byte=$4
+	# CREATE HISTORY FILE IF NOT EXISTS
+    if [ ! -f "$history_file" ] || ! jq -e '.history' "$history_file" >/dev/null 2>&1; then
+        echo '{"history":[]}' > "$history_file"
+    fi
+	# SAVE CHANGES
+    jq --arg row "$row" --arg col "$col" --arg old_byte "$old_byte" --arg new_byte "$new_byte" \
+       '.history += [{"row": ($row|tonumber), "col": ($col|tonumber), "old": $old_byte, "new": $new_byte}]' \
+       "$history_file" > "$history_file.tmp" && mv "$history_file.tmp" "$history_file"
+}
+
+# UNDO CHANGES
+undo_change() {
+	# IF NO HISTORY FILE
+	if [ ! -f "$history_file" ] || ! jq -e '.history' "$history_file" >/dev/null 2>&1; then
+		info="\e[36mNo actions to undo.\e[0m"
+		return
+	fi
+	local last_change
+	last_change=$(jq 'if (.history | length) > 0 then .history[-1] else empty end' "$history_file")
+	# IF NO HISTORY RECORDS
+	if [ -z "$last_change" ]; then
+		info="\e[36mNo actions to undo.\e[0m"
+		return
+	fi
+	local row col old_byte
+	# 'COORDINATES' OF CHANGE
+	row=$(echo "$last_change" | jq -r '.row')
+	col=$(echo "$last_change" | jq -r '.col')
+	old_byte=$(echo "$last_change" | jq -r '.old')
+	local current_line start
+	current_line="${hex_data[$row]}"
+	start=$(( col * 3 ))
+	# PERFORMING UNDO
+	hex_data[$row]="${current_line:0:$start}$old_byte${current_line:$((start+2))}"
+	# SAVING DATA
+	if [ ! -f "$redo_file" ] || ! jq -e '.history' "$redo_file" >/dev/null 2>&1; then
+		echo '{"history":[]}' > "$redo_file"
+	fi
+	# SAVE CHANGES
+	jq --argjson change "$last_change" '.history += [$change]' "$redo_file" > "$redo_file.tmp" && mv "$redo_file.tmp" "$redo_file"
+	jq 'del(.history[-1])' "$history_file" > "$history_file.tmp" && mv "$history_file.tmp" "$history_file"
+	printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+	# INFO AND EDITIONS COUNT
+	info="\e[36mUndo successful\e[0m"
+	editing="\e[35mUNDO\e[0m"
+	if [[ $editions -ne 0 ]]; then
+		((editions--))
+	fi
+}
+
+# REDO CHANGES
+redo_change() {
+	# IF NO HISTORY FILE
+	if [ ! -f "$redo_file" ] || ! jq -e '.history' "$redo_file" >/dev/null 2>&1; then
+		info="\e[36mNo actions to redo.\e[0m"
+		return
+	fi
+	local last_change
+	last_change=$(jq 'if (.history | length) > 0 then .history[-1] else empty end' "$redo_file")
+	# IF NO HISTORY RECORDS
+	if [ -z "$last_change" ]; then
+		info="\e[36mNo actions to redo.\e[0m"
+		return
+	fi
+	local row col new_byte
+	# 'COORDINATES' OF CHANGE
+	row=$(echo "$last_change" | jq -r '.row')
+	col=$(echo "$last_change" | jq -r '.col')
+	new_byte=$(echo "$last_change" | jq -r '.new')
+	local current_line start
+	current_line="${hex_data[$row]}"
+	start=$(( col * 3 ))
+	# PERFORMING REDO
+	hex_data[$row]="${current_line:0:$start}$new_byte${current_line:$((start+2))}"
+	if [ ! -f "$history_file" ] || ! jq -e '.history' "$history_file" >/dev/null 2>&1; then
+		echo '{"history":[]}' > "$history_file"
+	fi
+	# SAVE CHANGES
+	jq --argjson change "$last_change" '.history += [$change]' "$history_file" > "$history_file.tmp" && mv "$history_file.tmp" "$history_file"
+	jq 'del(.history[-1])' "$redo_file" > "$redo_file.tmp" && mv "$redo_file.tmp" "$redo_file"
+	printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+	# INFO AND EDITIONS COUNT
+	info="\e[36mRedo successful\e[0m"
+	redoed=true
+	editing="\e[35mREDO.\e[0m"
+	if $redoed; then
+		((editions++))
+	fi
+}
+
+# DRAWING HEX TABLE AND INFO
+draw_screen() {
+	# IF NOT FAST, DISABLE KEY PRINTING
+	if ! $fast; then
+		stty -echo
+	fi
+
+	# DRAWING
+	echo -en "\e[H" # GO TO TERMINAL 1;1
+
+	# GET AND VALIDATE TERMINAL HEIGHT
+	lines=$(tput lines)
+	if [[ -z $lines ]] || [[ $lines -le 0 ]] || ! [[ $lines =~ ^[0-9]+$ ]]; then
+		tput rmcup
+		echo -e "\e[31mCannot get terminal dimensions.\e[1A" >&2
+		exit 6
+	fi
+	# IF USER SPECIFY ROWS COUNT
+	if [[ -n $user_select_rows ]]; then
+		# IF TERMINAL IS TOO SMALL
+		if ((user_select_rows >= lines - 19)); then
+			max_rows=$((lines - 19))
+		# IF EVERYTHING OKAY
+		else
+			max_rows=$user_select_lines
+		fi
+	# IF NO USERS ROWS COUNT DECLARATIONS
+	else
+		# IF TERMINAL IS TOO SMALL
+		if ((lines - 19 <= 16)); then
+			max_rows=$((lines - 19))
+		# IF EVERYTHING OKAY
+		else
+			max_rows=16
+		fi
+	fi
+
+	# TITLE
+	echo -e "\e[?7l\e[44m\e[97m$(printf '%*s' $(( $(tput cols) + 10 )) | tr ' ' ' ')\r\e[K\e[1A+ Edit: $(realpath "$main_file")\e[0m"
+	echo -e "\e[?7h\e[K"
+
+	# PRINT HEX TABLE
+	offset_format="%06X"
+	for ((i = scroll; i < scroll + max_rows && i < rows; i++)); do
+		row_display="${hex_data[$i]}"
+
+		# SWITCH DISPLAYED STRING DUE TO SELECTED MODE
+		if $offset_mode; then
+			offset=$(printf "$offset_format" $((i * cols)))
+		else
+			offset="      "
+		fi
+
+		hex_output=""
+
+		# PREPARE ASCII COLUMN
+		if $ascii; then
+			if [ -z "${ascii_cache[$i]}" ]; then
+				# CREATE LINE
+				local ascii_line=""
+				# READ BYTES TO TRANSLATE
+				read -ra bytes_for_ascii <<< "$row_display"
+				for byte in "${bytes_for_ascii[@]}"; do
+					# PARSE BYTE
+					if [[ "$byte" != "--" ]]; then
+						case "$byte" in
+							# KNOWS NON PRINTABLE
+							"00"|"7F")
+								ascii_line+="\e[1;30m.\e[0m\e[K" ;;
+							# OTHER
+							*)
+								char=$(echo -ne "\x$byte" 2>/dev/null)
+								# OTHER NON-PRINTABLE/PRINTABLE
+								if [[ "$char" =~ [[:print:]] ]]; then
+									ascii_line+="\e[33m$char\e[0m\e[K"
+								else
+									ascii_line+="\e[1;30m.\e[0m\e[K"
+								fi
+								;;
+						esac
+					fi
+				done
+				# WRITE BYTE TO ASCII TABLE
+				ascii_cache[$i]="$ascii_line"
+			fi
+			# CREATE COMOLETED TABLE
+			ascii_output="${ascii_cache[$i]}"
+		fi
+
+		# SECTIIN HIGHLIGHTING CHANGES
+		read -ra bytes <<< "$row_display"
+		for ((j = 0; j < ${#bytes[@]}; j++)); do
+		byte="${bytes[$j]}"
+
+		# READ BYTES FROM ORIGINAL LINE
+		orig_line="${orig_hex_data[$i]}"
+		read -ra orig_bytes <<< "$orig_line"
+
+		# FINAL DRAW BYTE-BY-BYTE WITH CHANGES HIGHLIGHTING
+		if [[ $i -eq $row && $j -eq $col ]]; then
+				hex_output+="\e[1;34;107m$byte\e[0m\e[1;30m \e[K"
+				else
+			if [[ "$byte" != "${orig_bytes[$j]}" ]]; then
+				hex_output+="\e[34m$byte\e[0m\e[1;30m "
+			else
+				hex_output+="$byte "
+			fi
+		fi
+	done
+
+	# DISPLAY WITH OR WITHOUT ASCII PREVIEW
+	if $ascii; then
+		echo -e " \e[36m$offset\e[0m \e[1;30m| $hex_output|\e[0m $ascii_output\e[K"
+	else
+		echo -e " \e[36m$offset\e[0m \e[1;30m| $hex_output|\e[0m\e[K"
+	fi
+	done
+
+	# ACTION INFO
+	echo -e "\e[K\nAction/Input: \e[36m${editing:-"--"}\e[0m\e[K"
+	# POSITION
+	echo -e "Current position: Row: \e[36m$row\e[0m, Col: \e[36m$col\e[0m\e[K"
+	# EDITIONS
+	echo -e "\e[K\nEditions count: \e[36m$editions\e[0m\e[K"
+	# FILETYPE
+	filetype=$(file -b "$main_file")
+	echo -e "\e[?7lFiletype: \e[36m$filetype\e[0m\e[?7h\e[K"
+	# FILE SIZE
+	size=$(du -sb "$main_file" | cut -f 1) # OR $(grep -oE '[0-9A-Fa-f]{2}' "$tmp_file" | wc -l) FOR BETTER BUT SLOWER DATA
+	echo -e "Size in Bytes: \e[36m$size\e[0m\e[K"
+	# LINES COUNT
+	echo -e "Total rows count: \e[36m$((rows - 1))\e[0m\e[K"
+	# OFFSETS COUNT
+	echo -e "Total offsets count: \e[36m$( printf "%06X" $((size - 1)) )\e[0m\e[K"
+	# OFFSET VIEW
+	if $offset_mode; then
+		offset_status="\e[32menabled\e[0m"
+	else
+		offset_status="\e[31mdisabled\e[0m"
+	fi
+	echo -e "Offset preview: $offset_status (press O to switch)\e[K"
+	# ASCII VIEW
+	if $ascii; then
+		ascii_status="\e[32menabled\e[0m"
+	else
+		ascii_status="\e[31mdisabled\e[0m"
+	fi
+	echo -e "ASCII preview: $ascii_status (press P to switch)\e[J"
+	# FAST MODE
+	if $fast; then
+		fast_status="\e[32menabled\e[0m"
+	else
+		fast_status="\e[31mdisabled\e[0m"
+	fi
+	echo -e "Fast mode: $fast_status (press V to switch)\e[J"
+	# WARNING / INFO
+	if [[ -z "$warning" ]]; then
+		[[ -n "$info" ]] && echo -e "\e[?7l\e[$(( $(tput lines) - 3 ));1H$info\e[0m\e[?7h\e[J"
+		else
+		echo -e "\e[?7l\e[$(( $(tput lines) - 3 ));1H\e[1;31m$warning\e[0m\e[?7h\e[K"
+	fi
+	# REMOVE BUFFER IN FAST MODE
+	if ! $fast; then
+		stty echo
+		read -rsn999 -t 0.001 junk
+	fi
+}
+
+# SAVE FILE
+save_file() {
+	# CHECK, IF SAVING TO NEW FILE
+	local dest_file="$main_file"
+	if [[ $# -eq 1 && -n "$1" ]]; then
+		mkdir -p $(dirname "$1") || {
+			info="\e[1;31mCannot touch file.\e[0m"
+			return
+		}
+		local dest_file="$1"
+	fi
+
+	# REMOVE ALL '--' FROM FILE
+	sed -i 's/ --//g' "$tmp_file"
+
+	# CHECK IF FILE CONTAINS VALID HEX SYMBOLS
+	if ! grep -qE '^([0-9A-Fa-f]{2} )*[0-9A-Fa-f]{2}$' "$tmp_file"; then
+		info="\e[1;31mInvalid HEX data in file.\e[0m"
+		return
+	fi
+
+	# CONVERT HEX TABLE TO VALID ASCII TEXT
+	xxd -r -p "$tmp_file" > "$tmp_file.bin" || {
+		info="\e[1;31mCannot convert file.\e[0m"
+		return
+	}
+
+	# LAST TIME CHECK IF DIRECTORY EXISTS
+	dir=$(dirname "$main_file")
+	[ -d "$dir" ] || mkdir -p "$dir"
+
+	# SAVE FILE
+	cp "$tmp_file.bin" "$dest_file" &>/dev/null && info="\e[1;32mSaved $(realpath "$dest_file")\e[0m" || info="\e[1;31mCannot save file.\e[0m"
+
+	# CLEAN UP AND SWITCH TO NEW FILE
+	if [[ $# -eq 1 && -n $1 && -f "$1" ]]; then
+		rm -f "$tmp_file.bin" # REMOVE CONVERTED FILE
+		# DECLARE NEW FILES
+		main_file="$1"
+		# TEMP FILE
+		if [[ -f "$tmp_file" ]]; then
+			mv "$tmp_file" "$cache_dir/$(basename "$main_file").tmp"
+		fi
+		tmp_file="$cache_dir/$(basename "$main_file").tmp"
+		# UNDO FILE
+		if [[ -f "$history_file" ]]; then
+			mv "$history_file" "$cache_dir/$(basename "$main_file").changes.json"
+		fi
+		history_file="$cache_dir/$(basename "$main_file").changes.json"
+		# REDO FILE
+		if [[ -f "$redo_file" ]]; then
+			mv "$redo_file" "$cache_dir/$(basename "$main_file").redo.json"
+		fi
+		redo_file="$cache_dir/$(basename "$main_file").redo.json"
+		# BACKUP FILE
+		bak_file="$cache_dir/$(basename "$main_file").bak"
+		if [[ -f "$bak_file" ]]; then
+			mv "$bak_file" "$bak_file".old
+		fi
+		cp "$main_file" "$bak_file"
+	fi
+	
+	# REMOVE CONVERTED FILE
+	rm -f "$tmp_file.bin"
+}
+
+# RECOGNIZE KEYS AND MANIPULATIRS
+handle_input() {
+	while true; do
+		# DRAW SCREEN
+		draw_screen
+		# READ 1 KEY
+		read -rsn1 key
+		# CHECK IF FIRST PRESSED KEY IS ESCAPE
+		if [[ "$key" == $'\e' ]]; then
+			temp_input=""
+			# READ NEXT 2 SYMBOLS
+			read -rsn2 -t 0.0001 key2
+			# ARROW UP
+			if [[ "$key2" == "[A" ]]; then
+				((row--))
+				if ((row < 0)); then
+					row=0
+				fi
+				editing="\e[35mUP\e[0m"
+				info=
+			# ARROW DOWN
+			elif [[ "$key2" == "[B" ]]; then
+				((row++))
+				if ((row >= rows)); then
+					row=$((rows - 1))
+				fi
+				editing="\e[35mDOWN\e[0m"
+				info=
+			# ARROW LEFT
+			elif [[ "$key2" == "[C" ]]; then
+				((col++))
+				if ((col >= cols)); then
+					((row++))
+					if ((row >= rows)); then
+						col=$((cols - 1))
+						else
+						col=0
+					fi
+				fi
+				if ((row >= rows)); then
+					row=$((rows-1))
+				fi
+				editing="\e[35mLEFT\e[0m"
+				info=
+			# ARROW RIGHT
+			elif [[ "$key2" == "[D" ]]; then
+				((col--))
+				if ((col < 0)); then
+					((row--))
+					col=$((cols - 1))
+				fi
+				if ((row < 0)); then
+					row=0
+					col=0
+				fi
+				editing="\e[35mRIGHT\e[0m"
+				info=
+			# HOME
+			elif [[ "$key2" == "[H" ]]; then
+				col=0
+				editing="\e[35mHOME\e[0m"
+				info=
+			# END
+			elif [[ "$key2" == "[F" ]]; then
+				col=$((cols - 1))
+				editing="\e[35mEND\e[0m"
+				info=
+			# PAGE UP
+			elif [[ "$key2" == "[5" ]]; then
+				read -rsn1 key3
+				if [[ "$key3" == "~" ]]; then
+					for PD in {1..5}; do
+					((row--))
+						if ((row < 0)); then
+							row=0
+						fi
+						done
+					editing="\e[35mUP\e[0m"
+					info=
+				fi
+			# PAGE DOWN
+			elif [[ "$key2" == "[6" ]]; then
+				read -rsn1 key3
+				if [[ "$key3" == "~" ]]; then
+					for PG in {1..5}; do
+						((row++))
+						if ((row >= rows)); then
+							row=$((rows - 1))
+						fi
+						editing="\e[35mDOWN\e[0m"
+						info=
+					done
+				fi
+			fi
+		# NON-ESCAPED INPUTS
+		else
+			case "$key" in
+				# DATA LETTERS AND NUMBERS
+				[0-9A-Fa-f])
+					temp_input+="$key"
+					# SINGLE KEY - HALF OF EDITION
+					if [[ ${#temp_input} -eq 1 ]]; then
+						temp_input=$(echo "$temp_input" | tr 'a-f' 'A-F')
+						editing="$temp_input\e[1;30m-\e[0m"
+					fi
+					# SINGLE KEY - COMPLETE EDITION
+					if [[ ${#temp_input} -eq 2 ]]; then
+						temp_input=$(echo "$temp_input" | tr 'a-f' 'A-F')
+						echo '{"history":[]}' > "$redo_file"
+						current_byte=${hex_data[$row]:$((col*3)):2}
+						save_change_to_history "$row" "$col" "$current_byte" "$temp_input"
+						hex_data[$row]="${hex_data[$row]:0:$col*3}$temp_input${hex_data[$row]:$(($col*3+2))}"
+						unset 'ascii_cache[$row]'
+						editing="$temp_input"
+						temp_input=""
+						((editions++))
+						info=
+
+						printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+
+						((col++))
+						if ((col >= cols)); then
+							((row++))
+							if ((row >= rows)); then
+								col=$((cols - 1))
+								else
+								col=0
+							fi
+						fi
+						if ((row >= rows)); then
+							row=$((rows-1))
+						fi
+					fi
+					;;
+				# DELETE SYMBOL
+				[xX])
+					editing="DELETE"
+					temp_input="--"
+					echo '{"history":[]}' > "$redo_file"
+					current_byte=${hex_data[$row]:$((col*3)):2}
+					save_change_to_history "$row" "$col" "$current_byte" "$temp_input"
+					hex_data[$row]="${hex_data[$row]:0:$col*3}$temp_input${hex_data[$row]:$(($col*3+2))}"
+					unset 'ascii_cache[$row]'
+					((editions++))
+
+					printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+
+					temp_input=""
+
+					((col++))
+					if ((col >= cols)); then
+						((row++))
+						if ((row >= rows)); then
+							col=$((cols - 1))
+							else
+							col=0
+						fi
+					fi
+					if ((row >= rows)); then
+						row=$((rows-1))
+					fi
+					;;
+				# SAVE FILE
+				[wW])
+					echo -e "\e[?7l\e[$(( $(tput lines) - 3 ));1H\e[33mSaving...\e[0m\e[?7h\e[K\e[J"
+					save_file
+					editions=0
+					;;
+				# FAST MODE SWITCH
+				[vV])
+					if $fast; then
+						fast=false
+						info="\e[36mFast mode disabled."
+					else
+						fast=true
+						info="\e[36mFast mode enabled."
+					fi
+					;;
+				# EXIT
+				[qQ])
+					if [[ $editions -ne 0 ]]; then
+						saved=false
+					fi
+					if $saved; then
+						break
+					else
+						echo -e "\e[?7l\e[$(( $(tput lines) - 3 ));1H\e[31mUnsaved changes. Are You sure you want to exit?\e[J"
+						echo -e "Press any key to continue or 'q' to discard and exit.\e[0m\n\e[?7h\e[K"
+						read -rsn1 discard
+						if [[ $discard =~ ^[qQ]$ ]]; then
+							break
+						else
+							info=
+						fi
+					fi
+					;;
+				# SCROLL DOWN
+				[jJ])
+					if ! [[ $rows -le $max_rows ]]; then
+						((scroll++))
+						if ((scroll + max_rows - 1 >= rows)); then
+							scroll=$((rows - 16))
+						fi
+					fi
+					editing="\e[33mSCROLL DOWN\e[0m"
+					info=
+					;;
+				# SCROLL DOWN
+				[nN])
+					if ! [[ $rows -le $max_rows ]]; then
+						for N in {1..5}; do
+							((scroll++))
+							if ((scroll + max_rows - 1 >= rows)); then
+								scroll=$((rows - 16))
+							fi
+						done
+					fi
+					editing="\e[33mSCROLL DOWN\e[0m"
+					info=
+					;;
+				# SCROLL UP
+				[kK])
+					((scroll--))
+					if ((scroll < 0)); then
+						scroll=0
+					fi
+					editing="\e[33mSCROLL UP\e[0m"
+					info=
+					;;
+				# SCROLL UP
+				[mM])
+					for M in {1..5}; do
+						((scroll--))
+						if ((scroll < 0)); then
+							scroll=0
+						fi
+					done
+					editing="\e[33mSCROLL UP\e[0m"
+					info=
+					;;
+				# JUMP TO LINE
+				[lL])
+					echo -en "\e[36mEnter line number:\e[33m "
+					read number
+					# VALIDATE USERS INPUT
+					if [[ $number =~ ^[0-9]+$ ]] && [[ $number -lt $rows ]]; then
+						info=
+						editing="\e[35mMoved to line ${number}.\e[0m"
+						# JUMP
+						row=$number
+						scroll=$((number - (max_rows / 2)))
+					else
+						info="\e[31mCannot move!\e[0m"
+					fi
+					echo -en "\e[0m"
+					;;
+				# JUMP TO OFFSET
+				[iI])
+					echo -en "\e[36mEnter offset (hex):\e[33m "
+					read offset_input
+					display_jump="$offset_input"
+					echo -en "\e[0m"
+
+					# VALIDATE USERS INPUT
+					if [[ $offset_input =~ ^[0-9A-Fa-f]+$ ]]; then
+						# CALCULATE USERS INPUT
+						offset_input=$((16#$offset_input))
+						target_row=$((offset_input / cols))
+
+						# JUMP TO TARGET BYTE
+						if [[ $target_row -lt $rows ]]; then
+							row=$target_row
+							scroll=$target_row
+							col=$((offset_input % cols))
+							info="\e[35mMoved to offset ${display_jump}.\e[0m"
+						else
+							info="\e[31mOffset out of range!\e[0m"
+						fi
+					else
+						info="\e[31mInvalid offset!\e[0m"
+					fi
+					;;
+				# ASCII MODE SWITCH
+				[pP])
+					if $ascii; then
+						ascii=false
+						info="\e[36mASCII preview disabled."
+					else
+						ascii=true
+						info="\e[36mASCII preview enabled."
+					fi
+					;;
+				# OFFSET MODE SWITCH
+				[oO])
+					if $offset_mode; then
+						offset_mode=false
+						info="\e[36mOffset preview disabled."
+					else
+						offset_mode=true
+						info="\e[36mOffset preview enabled."
+					fi
+					;;
+				# IN-SCRIPT HELP
+				[hH])
+					clear
+					while true; do
+						echo -en "\e[H"
+						help false
+						read -rsn1 -t 1 discard
+						if [[ $discard =~ ^[Hh]$ ]]; then
+							break
+						fi
+					done
+					;;
+				# UNDO
+				[zZ])
+					undo_change
+					;;
+				# REDO
+				[rR])
+					redo_change
+					;;
+				# SAVE TO NEW FILE
+				[sS])
+					echo -en "\e[36mSave to new file:\e[33m "
+					read new_file
+					echo -en "\e[0m"
+					if [[ -e "$new_file" ]]; then
+						info="\e[31mEntity with specified name exists!\e[0m"
+						continue
+					fi
+					echo -e "\e[?7l\e[$(( $(tput lines) - 3 ));1H\e[33mSaving...\e[0m\e[?7h\e[K\e[J"
+					save_file "$new_file"
+					editions=0
+					;;
+				# SPACE 20
+				.)
+					echo '{"history":[]}' > "$redo_file"
+					current_byte=${hex_data[$row]:$((col*3)):2}
+					save_change_to_history "$row" "$col" "$current_byte" "$temp_input"
+					hex_data[$row]="${hex_data[$row]:0:$col*3}20${hex_data[$row]:$(($col*3+2))}"
+					unset 'ascii_cache[$row]'
+					editing="SPACE"
+					((col++))
+					if ((col >= cols)); then
+						((row++))
+						if ((row >= rows)); then
+							col=$((cols - 1))
+						else
+							col=0
+						fi
+					fi
+					if ((row >= rows)); then
+						row=$((rows-1))
+					fi
+					((editions++))
+					info=
+					printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+					;;
+				# NEW LINE
+				"")
+					editing="\e[35mNEW LINE\e[0m"
+
+					new_line=""
+					for ((i = 0; i < cols; i++)); do
+						new_line+="-- "
+					done
+					new_line="${new_line::-1}"
+
+					hex_data=("${hex_data[@]:0:row+1}" "$new_line" "${hex_data[@]:row+1}")
+					unset 'ascii_cache[$row]'
+
+					printf "%s\n" "${hex_data[@]}" > "$tmp_file"
+
+					rows=${#hex_data[@]}
+
+					((row++))
+					info=
+					;;
+			esac
+		fi
+	done
+}
+
+handle_input
