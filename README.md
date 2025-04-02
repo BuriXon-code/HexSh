@@ -1,5 +1,7 @@
 # HexSh - A Bash-Based Hex Editor
 
+![screenshot](/screenshots/img1.jpg)  
+
 ## About
 
 **HexSh** is a simple hex editor written in **pure Bash**. It allows you to **view and edit the hexadecimal content** of files directly from the terminal. Designed for **lightweight operation**, it is suitable for **quick hex modifications** without requiring complex external dependencies.
@@ -104,6 +106,8 @@ Script was tested in:
 - Termux 0.119.0-beta.1/-beta.2
 
 Script was tested in bash 5.2.37(1)
+
+![screenshot](/screenshots/img2.jpg)  
 
 ## Usage
 
