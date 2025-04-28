@@ -187,7 +187,7 @@ help() {
 	echo -e "   - Press 'v' to enable/disable fast mode.\e[K"
 	echo -e "     \e[2m+Info: Enabling fast mode increases the editor's performance at the cost of graphical stability.\e[0m\e[K"
 	echo -e "   - Press '.' to write hex space (code 20).\e[K"
-	echo -e "   - Press 'enter' to create new emoty line.\e[K"
+	echo -e "   - Press 'enter' to create new empty line.\e[K"
 	echo -e "     \e[2m+Info: Cannot undo!\e[0m\e[K"
 	echo -e "   - Press 'x' to delete selected byte.\e[K"
 	echo -e "     \e[2m+Info: Sometime crashes with undo/redo.\e[0m\e[K"
